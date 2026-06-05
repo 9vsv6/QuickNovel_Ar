@@ -55,17 +55,18 @@ class CeneleProvider : MainAPI() {
         orderBy: String?,
         tag: String?,
     ): HeadMainPageResponse {
+        // Keeps pagination perfectly aligned with their catalog scroll sub-paths
         val url = "$mainUrl/cont/page/$page/"
         val document = app.get(url).document
         
-        // Target custom child-theme grids derived from image_8d311e.jpg DOM elements
+        // Target custom child-theme grids derived from image_8d25f6.jpg DOM elements
         val returnValue = document.select("article.nhv-nrRow, div.nhv-pitem, div.page-item-detail").mapNotNull { h ->
-            // Precise selector pairing to lock onto correct title nodes
             val textLink = h.selectFirst("a.nhv-nrTitle, h4.nhv-pTitle, h3.post-title a, div.post-title a") ?: return@mapNotNull null
             val cUrl = textLink.attr("href") ?: return@mapNotNull null
-            val name = textLink.text().trim()
             
-            if (name.isBlank() || name.startsWith("image-") || name.startsWith("peak")) return@mapNotNull null
+            // Extract the clean inner text directly from the confirmed title nodes
+            val name = textLink.text().trim()
+            if (name.isBlank()) return@mapNotNull null
             
             val imgElement = h.selectFirst("img")
             
@@ -81,9 +82,9 @@ class CeneleProvider : MainAPI() {
         return document.select("article.nhv-nrRow, div.nhv-pitem, div.page-item-detail, div.c-tabs-item__content").mapNotNull { h ->
             val textLink = h.selectFirst("a.nhv-nrTitle, h4.nhv-pTitle, div.post-title h3 a, div.post-title a, div.item-thumb a") ?: return@mapNotNull null
             val cUrl = textLink.attr("href") ?: return@mapNotNull null
-            val name = textLink.text().trim()
             
-            if (name.isBlank() || name.startsWith("image-") || name.startsWith("peak")) return@mapNotNull null
+            val name = textLink.text().trim()
+            if (name.isBlank()) return@mapNotNull null
             
             val imgElement = h.selectFirst("img")
             
