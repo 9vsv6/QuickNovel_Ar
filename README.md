@@ -1,10 +1,10 @@
 # QuickNovel
 
-**English** | [Русский](README_RU.md)
+**English** 
 
 Adfree FOSS Android app for downloading novels. It also functions as an Epub reader.
 
-**Discord:** https://discord.gg/5Hus6fM
+**Discord:** 
 
 **Download:** https://github.com/9vsv6/QuickNovel_Ar/releases
 
