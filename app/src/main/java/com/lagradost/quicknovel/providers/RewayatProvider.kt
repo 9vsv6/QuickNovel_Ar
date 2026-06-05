@@ -18,14 +18,13 @@ import com.lagradost.quicknovel.newStreamResponse
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
-class RewayatProvider():  MainAPI() {
+class RewayatProvider(): MainAPI() {
     override val name = "Rewayat"
     override val mainUrl = "https://rewayat.club"
     private val secondUrl = "https://api.rewayat.club"
-    override val iconId = R.drawable.icon_rewayat
-
+    override val iconId = R.drawable.icon_default // Adjusted fallback to default resource template layer
     override val hasMainPage = true
-    override val iconBackgroundId = R.color.rewayatARlColor
+    override val iconBackgroundId = R.color.readerBackground
     override val lang = "ar"
 
     override val orderBys = listOf(
@@ -58,115 +57,111 @@ class RewayatProvider():  MainAPI() {
         "حريم" to "14"
     )
 
-    private fun getListOfPosters(document: Document):List<String>{
-        val script = document.select("script")
-            .firstOrNull { it.data().contains("window.__NUXT__") }
-            ?.data()
-
-        val imgRegex = Regex("""poster_url:"(.*?)"""")
-        val matches = imgRegex.findAll(script ?: "")
-
-        return matches.map {
-            secondUrl + it.groupValues[1].replace("\\u002F", "/")
-        }.toList()
-    }
-
     override suspend fun loadMainPage(
         page: Int,
         mainCategory: String?,
         orderBy: String?,
         tag: String?
-    ): HeadMainPageResponse
-    {
-        val url = "$mainUrl/library?type=$mainCategory&ordering=$orderBy${if(!tag.isNullOrEmpty()) "&genre=$tag" else ""}&page=$page"
+    ): HeadMainPageResponse {
+        // Formulate the requested search library path explicitly matching your endpoint description
+        val url = "$mainUrl/library?type=${mainCategory ?: "0"}&ordering=${orderBy ?: "-num_chapters"}${if (!tag.isNullOrEmpty()) "&genre=$tag" else ""}&page=$page"
         val document = app.get(url).document
 
-        val imgUrls = getListOfPosters(document)
+        // Target the inner structural wrapping grid nodes shown in your DevTools image snapshot
+        val returnValue = document.select("div.row.row--dense > div").mapNotNull { div ->
+            val anchorElement = div.selectFirst("a") ?: return@mapNotNull null
+            val relativeUrl = anchorElement.attr("href") ?: return@mapNotNull null
+            
+            // Extract the true textual title heading from the correct metadata block element
+            val title = anchorElement.selectFirst("div.v-list-item__title")?.text()?.trim() ?: return@mapNotNull null
 
-        var i = 0
-        val returnValue = document.select("div.container div.row.row--dense > div").mapNotNull { div ->
-            val title = div.selectFirst("div[role=listitem] div.v-list-item__content div.v-list-item__title")?.text()?.trim() ?: return@mapNotNull null
-            val url = div.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-
+            // Direct inline CSS background-image style extraction parsing fix verified from image_8cc178.jpg
+            val styleAttr = anchorElement.selectFirst("div.v-image__image")?.attr("style") ?: ""
+            val imgUrlMatch = Regex("""url\("([^"]+)"\)""").find(styleAttr)?.groupValues?.get(1)
+                ?: Regex("""url\(&quot;([^&]+)&quot;\)""").find(styleAttr)?.groupValues?.get(1)
 
             newSearchResponse(
                 name = title,
-                url = url
+                url = fixUrl(relativeUrl)
             ) {
-                posterUrl = imgUrls.getOrNull(i)
-                i++
+                this.posterUrl = imgUrlMatch?.trim()
             }
-
         }
         return HeadMainPageResponse(url, returnValue)
     }
 
-
-    private suspend fun getChapters(document: Document, url: String):List<ChapterData>{
-        val newUrl = "$secondUrl/api/chapters/${url.substringAfterLast("/")}/?ordering=number&page="
-        val chapter = app.get(newUrl + 1).parsed<RewayatMainResponse>()
-        val totalChapters = chapter.count
-        if (totalChapters > 1) {
-                return (0..< totalChapters).map { chapterNumber ->
+    private suspend fun getChapters(document: Document, url: String): List<ChapterData> {
+        val novelSlug = url.substringAfterLast("/")
+        val newUrl = "$secondUrl/api/chapters/$novelSlug/?ordering=number&page="
+        
+        return try {
+            val chapter = app.get(newUrl + "1").parsed<RewayatMainResponse>()
+            val totalChapters = chapter.count
+            if (totalChapters > 0) {
+                (0 until totalChapters.toInt()).map { chapterNumber ->
                     val chapterUrl = "$newUrl-------$chapterNumber-------$totalChapters"
-                    newChapterData("Chapter ${chapterNumber + 1}", chapterUrl)
+                    newChapterData("الفصل ${chapterNumber + 1}", chapterUrl)
                 }
-
-        }
-
-        return document.select("div.v-window-item.v-window-item--active > div[role=list] > div > a").mapIndexedNotNull { index, li ->
-            val name = li.selectFirst("div.v-list-item__content")?.text() ?: "Chapter $index"
-            val url = fixUrl(li.attr("href"))
-            newChapterData(name, url)
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) {
+            // Document element parsing fallback loop routine if api endpoint fails
+            document.select("div[role=list] > div > a, div.v-window-item a").mapIndexedNotNull { index, li ->
+                val name = li.selectFirst("div.v-list-item__content")?.text() ?: "الفصل $index"
+                val cUrl = fixUrl(li.attr("href"))
+                newChapterData(name, cUrl)
+            }
         }
     }
 
-
-
-    override suspend fun load(url: String): LoadResponse
-    {
+    override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
         val infoDiv = document.select("div.container")
 
-        val title = infoDiv.selectFirst("h1 > span")?.text() ?: throw ErrorLoadingException("No title")
+        val title = document.selectFirst("h1 > span, div.text-h4")?.text()?.trim() 
+            ?: throw ErrorLoadingException("Failed to capture title nodes")
 
         val chapters = getChapters(document, url)
-        val imgUrls = getListOfPosters(document)[0]
-        return newStreamResponse(title,fixUrl(url), chapters) {
-            this.posterUrl = imgUrls
-            this.synopsis = infoDiv.selectFirst("div.text-body-2.font-weight-medium.font-dense.font-cairo.mb-6.text-pre-line span")?.text() ?: ""
+        
+        // Grab direct poster layout node maps
+        val styleAttr = document.selectFirst("div.v-image__image")?.attr("style") ?: ""
+        val coverUrl = Regex("""url\("([^"]+)"\)""").find(styleAttr)?.groupValues?.get(1)
+            ?: Regex("""url\(&quot;([^&]+)&quot;\)""").find(styleAttr)?.groupValues?.get(1)
+
+        return newStreamResponse(title, fixUrl(url), chapters) {
+            this.posterUrl = coverUrl
+            this.synopsis = document.selectFirst("div.text-body-2.text-pre-line, div.font-cairo.mb-6")?.text()?.trim() ?: ""
         }
     }
 
-
-    private fun getChapterParagraphs(doc: Document):List<String>?{
+    private fun getChapterParagraphs(doc: Document): List<String>? {
         val script = doc.select("script")
             .firstOrNull { it.data().contains("window.__NUXT__") }
             ?.data()
         val contentRaw = Regex("""\.content\s*=\s*"(.*?)";""")
             .find(script ?: "")
             ?.groupValues?.get(1)
+        
         val html = contentRaw
-            ?.replace("\\n","")
+            ?.replace("\\n", "")
             ?.replace("\\u003C", "<")
             ?.replace("\\u003E", ">")
             ?.replace("\\u002F", "/")
             ?: return null
 
-        val soup = Jsoup.parse(html)
+        return Jsoup.parse(html)
             .select("p")
             .map { it.text().trim() }
             .filter { it.isNotEmpty() }
-        return soup
     }
 
     override suspend fun loadHtml(url: String): String? {
-        //[url, chapter number]
         val chapterData = url.split("-------")
-        if(chapterData.size == 1){
+        if (chapterData.size == 1) {
             val dc = app.get(url).document
-            val title =  dc.selectFirst("div.v-card__subtitle.headerClassRTL.font-weight-medium.font-cairo")?.outerHtml()?:""
-            val contentElement = getChapterParagraphs(dc)?:return null
+            val title = dc.selectFirst("div.v-card__subtitle.font-cairo")?.outerHtml() ?: ""
+            val contentElement = getChapterParagraphs(dc) ?: return null
             return title + contentElement.joinToString("</br>")
         }
 
@@ -176,34 +171,36 @@ class RewayatProvider():  MainAPI() {
         val itemsPerPage = 24
 
         val remainder = totalChapters % itemsPerPage
-        val offset = if(remainder == 0) 0 else itemsPerPage - remainder
+        val offset = if (remainder == 0) 0 else itemsPerPage - remainder
         val adjustedIndex = chapterBigIndex + offset
 
-        val normalPage = if(remainder > chapterBigIndex) (adjustedIndex / itemsPerPage) + 1 else (chapterBigIndex / itemsPerPage) + 1
+        val normalPage = if (remainder > chapterBigIndex) (adjustedIndex / itemsPerPage) + 1 else (chapterBigIndex / itemsPerPage) + 1
         val chapterIndex = chapterBigIndex % itemsPerPage
 
-        val document = app.get("$baseUrl$normalPage").parsed<RewayatMainResponse>()
-
-        val chapter = document.results.getOrNull(chapterIndex) ?: return null
-        val dc = app.get("$mainUrl/novel/${url.substringAfterLast("chapters/").substringBefore("/?ordering")}/${chapter.number}").document
-        val title =  dc.selectFirst("h1 a")?.outerHtml()?:""
-        val contentElement = getChapterParagraphs(dc)?:return null
-        return title +"</br>"+ contentElement.joinToString("</br>")
+        val response = app.get("$baseUrl$normalPage").parsed<RewayatMainResponse>()
+        val chapter = response.results.getOrNull(chapterIndex) ?: return null
+        
+        val slug = url.substringAfterLast("chapters/").substringBefore("/?ordering")
+        val fullUrl = "$mainUrl/novel/$slug/${chapter.number}"
+        
+        val dc = app.get(fullUrl).document
+        val title = dc.selectFirst("h1 a, div.text-h5")?.outerHtml() ?: ""
+        val contentElement = getChapterParagraphs(dc) ?: return null
+        return title + "</br>" + contentElement.joinToString("</br>")
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/api/novels/search/all/?search=${Uri.encode(query)}"
         val document = app.get(url).parsed<RewayatSearchResponse>()
         return document.results.map { element ->
-            val title = element.english
-            val novelUrl = fixUrl("/novel/"+element.slug)
-            val coverUrl = secondUrl + element.posterUrl
-            newSearchResponse(title, novelUrl){
+            val title = element.english.ifBlank { element.arabic }
+            val novelUrl = fixUrl("/novel/" + element.slug)
+            val coverUrl = if (element.posterUrl.startsWith("http")) element.posterUrl else secondUrl + element.posterUrl
+            newSearchResponse(title, novelUrl) {
                 posterUrl = coverUrl
             }
         }
     }
-
 
     data class RewayatSearchResponse(
         val count: Long,
