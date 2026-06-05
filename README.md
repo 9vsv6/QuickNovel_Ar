@@ -6,7 +6,7 @@ Adfree FOSS Android app for downloading novels. It also functions as an Epub rea
 
 **Discord:** https://discord.gg/5Hus6fM
 
-**Download:** https://github.com/LagradOst/QuickNovel/releases
+**Download:** https://github.com/9vsv6/QuickNovel_Ar/releases
 
 **Providers used:** 
 
