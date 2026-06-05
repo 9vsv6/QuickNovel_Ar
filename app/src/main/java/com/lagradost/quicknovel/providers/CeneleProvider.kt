@@ -58,14 +58,13 @@ class CeneleProvider : MainAPI() {
         val url = "$mainUrl/cont/page/$page/"
         val document = app.get(url).document
         
-        // Target catalog wrappers
-        val returnValue = document.select("article.nhv-nrRow, div.page-item-detail, div.manga-box").mapNotNull { h ->
-            // Try to find the exact novel title links
-            val textLink = h.selectFirst("h3.post-title a, div.post-title a, a.nhv-nrCover") ?: return@mapNotNull null
+        // Target custom child-theme grids derived from image_8d311e.jpg DOM elements
+        val returnValue = document.select("article.nhv-nrRow, div.nhv-pitem, div.page-item-detail").mapNotNull { h ->
+            // Precise selector pairing to lock onto correct title nodes
+            val textLink = h.selectFirst("a.nhv-nrTitle, h4.nhv-pTitle, h3.post-title a, div.post-title a") ?: return@mapNotNull null
             val cUrl = textLink.attr("href") ?: return@mapNotNull null
+            val name = textLink.text().trim()
             
-            // FIX: Prioritize getting the actual clean text or title attribute of the link instead of image alt
-            val name = textLink.attr("title").ifBlank { textLink.text() }.trim()
             if (name.isBlank() || name.startsWith("image-") || name.startsWith("peak")) return@mapNotNull null
             
             val imgElement = h.selectFirst("img")
@@ -79,12 +78,11 @@ class CeneleProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query&post_type=wp-manga").document
-        return document.select("article.nhv-nrRow, div.page-item-detail, div.c-tabs-item__content").mapNotNull { h ->
-            val textLink = h.selectFirst("div.post-title h3 a, div.post-title a, a.nhv-nrCover, div.item-thumb a") ?: return@mapNotNull null
+        return document.select("article.nhv-nrRow, div.nhv-pitem, div.page-item-detail, div.c-tabs-item__content").mapNotNull { h ->
+            val textLink = h.selectFirst("a.nhv-nrTitle, h4.nhv-pTitle, div.post-title h3 a, div.post-title a, div.item-thumb a") ?: return@mapNotNull null
             val cUrl = textLink.attr("href") ?: return@mapNotNull null
+            val name = textLink.text().trim()
             
-            // FIX: Stop parsing the image alt attributes to avoid filename leaks
-            val name = textLink.attr("title").ifBlank { textLink.text() }.trim()
             if (name.isBlank() || name.startsWith("image-") || name.startsWith("peak")) return@mapNotNull null
             
             val imgElement = h.selectFirst("img")
