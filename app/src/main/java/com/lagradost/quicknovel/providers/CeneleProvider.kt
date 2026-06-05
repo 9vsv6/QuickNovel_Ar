@@ -55,16 +55,17 @@ class CeneleProvider : MainAPI() {
         orderBy: String?,
         tag: String?,
     ): HeadMainPageResponse {
-        val url = "$mainUrl/page/$page/"
+        val url = "$mainUrl/cont/page/$page/"
         val document = app.get(url).document
         
-        val returnValue = document.select("div.page-item-detail, div.manga-box").mapNotNull { h ->
-            val imageHeader = h.selectFirst("h3.post-title a, div.post-title a") ?: return@mapNotNull null
+        val returnValue = document.select("div#loop-content div.page-item-detail").mapNotNull { h ->
+            val imageHeader = h.selectFirst("div.item-thumb a") ?: return@mapNotNull null
             val cUrl = imageHeader.attr("href") ?: return@mapNotNull null
-            val name = imageHeader.text() ?: return@mapNotNull null
+            val name = imageHeader.attr("title") ?: return@mapNotNull null
             
             newSearchResponse(name = name, url = cUrl) {
-                posterUrl = h.selectFirst("img")?.attr("src")
+                posterUrl = imageHeader.selectFirst("img")?.attr("data-src") 
+                    ?: imageHeader.selectFirst("img")?.attr("src")
             }
         }
         return HeadMainPageResponse(url, returnValue)
@@ -72,13 +73,14 @@ class CeneleProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query&post_type=wp-manga").document
-        return document.select("div.c-tabs-item__content, div.row.c-tabs-item__content").mapNotNull { h ->
-            val imageHeader = h.selectFirst("div.post-title h3 a, div.post-title a") ?: return@mapNotNull null
+        return document.select("div#loop-content div.page-item-detail, div.c-tabs-item__content").mapNotNull { h ->
+            val imageHeader = h.selectFirst("div.item-thumb a, div.post-title a") ?: return@mapNotNull null
             val cUrl = imageHeader.attr("href") ?: return@mapNotNull null
-            val name = imageHeader.text() ?: return@mapNotNull null
+            val name = imageHeader.attr("title")?.ifBlank { imageHeader.text() } ?: return@mapNotNull null
             
             newSearchResponse(name = name, url = cUrl) {
-                posterUrl = h.selectFirst("img")?.attr("src")
+                posterUrl = h.selectFirst("img")?.attr("data-src") 
+                    ?: h.selectFirst("img")?.attr("src")
             }
         }
     }
@@ -89,28 +91,35 @@ class CeneleProvider : MainAPI() {
         val name = document.select("div.post-title h1").text()
         val authors = document.select("div.author-content a").text()
 
-        // Adaptive endpoint routing for Cenele's URL pattern structure (e.g., /cont/novel-name/)
-        val cleanUrl = url.removeSuffix("/")
-        val ajaxUrl = "$cleanUrl/ajax/chapters/"
-        
-        // Fetch dynamic chapter layout via XMLHttpRequest
-        val ajaxDocument = app.post(
-            ajaxUrl, 
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-        ).document
-
         val data: ArrayList<ChapterData> = ArrayList()
-        val chapterHeaders = ajaxDocument.select("li.wp-manga-chapter > a")
+        
+        // Target custom child-theme grid items directly from the main document body
+        val chapterHeaders = document.select("div.nhv-latest10-bridge__grid a.nhv-latest10-bridge__item")
         
         for (c in chapterHeaders) {
             val cUrl = c.attr("href") ?: continue
-            val cName = c.text().trim()
-            val added = c.parent()?.selectFirst("span.chapter-release-date")?.text()?.trim()
+            val cName = c.text().trim() 
+            val added = null 
             
             data.add(ChapterData(cName, cUrl, added, null))
         }
         
+        // Chronological sort inversion
         data.reverse()
+
+        // Structural backwards fallback safety routine
+        if (data.isEmpty()) {
+            val cleanUrl = url.removeSuffix("/")
+            val ajaxDocument = app.post(
+                "$cleanUrl/ajax/chapters/", 
+                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+            ).document
+            
+            ajaxDocument.select("li.wp-manga-chapter > a").forEach { c ->
+                data.add(ChapterData(c.text().trim(), c.attr("href"), null, null))
+            }
+            data.reverse()
+        }
 
         return newStreamResponse(url = url, name = name, data = data) {
             this.author = authors
