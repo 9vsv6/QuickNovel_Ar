@@ -88,44 +88,53 @@ class CeneleProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         
-        val name = document.select("div.post-title h1").text()
-        val authors = document.select("div.author-content a").text()
+        // Detailed responsive title matching from image_a71e09.jpg
+        val mainTitle = document.select("div.manga-title h2").text().trim()
+        val altTitle = document.select("div.manga-alt-title").text().replace("رواية", "").trim()
+        val finalName = if (altTitle.isNotBlank()) "$mainTitle ($altTitle)" else mainTitle
 
+        val authors = document.select("div.manga-author a, div.author-content a").text().trim()
         val data: ArrayList<ChapterData> = ArrayList()
         
-        // Target custom child-theme grid items directly from the main document body
-        val chapterHeaders = document.select("div.nhv-latest10-bridge__grid a.nhv-latest10-bridge__item")
+        // 1. Target the volume accordion elements seen in image_a70ffb.jpg
+        val volumeSections = document.select("div#nhv-chapters-accordion section.nhv-volume-card")
         
-        for (c in chapterHeaders) {
-            val cUrl = c.attr("href") ?: continue
-            val cName = c.text().trim() 
-            val added = null 
+        // Loop through every volume container block sequentially
+        for (volume in volumeSections) {
+            // 2. Select the list rows matching the DOM structure in image_a70f22.jpg
+            val chapters = volume.select("li.wp-manga-chapter")
             
-            data.add(ChapterData(cName, cUrl, added, null))
-        }
-        
-        // Chronological sort inversion
-        data.reverse()
-
-        // Structural backwards fallback safety routine
-        if (data.isEmpty()) {
-            val cleanUrl = url.removeSuffix("/")
-            val ajaxDocument = app.post(
-                "$cleanUrl/ajax/chapters/", 
-                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
-            ).document
-            
-            ajaxDocument.select("li.wp-manga-chapter > a").forEach { c ->
-                data.add(ChapterData(c.text().trim(), c.attr("href"), null, null))
+            for (ch in chapters) {
+                val linkElement = ch.selectFirst("a") ?: continue
+                val cUrl = linkElement.attr("href") ?: continue
+                
+                // Get the clean name text or capture the inner span element
+                val spanName = linkElement.selectFirst("span.nhv-chapter-name")?.text()?.trim()
+                val cName = if (!spanName.isNullOrBlank()) spanName else linkElement.text().trim()
+                
+                // Extract the post release timestamp text
+                val added = ch.selectFirst("span.chapter-release-date")?.text()?.trim()
+                
+                data.add(ChapterData(cName, cUrl, added, null))
             }
-            data.reverse()
+        }
+        
+        // 3. Since volume blocks are listed chronological but inner tables might vary, 
+        // let's check reading trajectory orientation.
+        // If the first parsed item is a higher chapter number than the last, reverse it!
+        if (data.size > 1) {
+            val firstNum = data.first().name.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
+            val lastNum = data.last().name.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
+            if (firstNum > lastNum) {
+                data.reverse()
+            }
         }
 
-        return newStreamResponse(url = url, name = name, data = data) {
-            this.author = authors
-            this.tags = document.select("div.genres-content a").map { it.text() }
+        return newStreamResponse(url = url, name = finalName, data = data) {
+            this.author = authors.ifBlank { "Unknown" }
+            this.tags = document.select("div.genres-content a").map { it.text().trim() }
             this.posterUrl = document.select("div.summary_image img").attr("src")
-            this.synopsis = document.select("div.summary__content, div.description-summary").text()
+            this.synopsis = document.select("div.summary__content, div.description-summary, div.post-content_item h5:contains(القصة) + p").text().trim()
         }
     }
 
