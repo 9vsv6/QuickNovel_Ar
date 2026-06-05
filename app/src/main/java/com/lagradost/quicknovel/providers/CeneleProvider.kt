@@ -88,40 +88,69 @@ class CeneleProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         
-        // Detailed responsive title matching from image_a71e09.jpg
         val mainTitle = document.select("div.manga-title h2").text().trim()
         val altTitle = document.select("div.manga-alt-title").text().replace("رواية", "").trim()
         val finalName = if (altTitle.isNotBlank()) "$mainTitle ($altTitle)" else mainTitle
-
         val authors = document.select("div.manga-author a, div.author-content a").text().trim()
+
+        // 1. Grab the dynamic novel database details configured inside the parent container attributes
+        // Seen in your screenshot elements: data-novel="1234" or data-id
+        val chaptersContainer = document.selectFirst("div#nhv-manga-chapters")
+        val novelId = chaptersContainer?.attr("data-novel") 
+            ?: Regex("""\"manga_id\":\"(\d+)\"""").find(document.html())?.groupValues?.get(1) 
+            ?: ""
+
         val data: ArrayList<ChapterData> = ArrayList()
-        
-        // 1. Target the volume accordion elements seen in image_a70ffb.jpg
-        val volumeSections = document.select("div#nhv-chapters-accordion section.nhv-volume-card")
-        
-        // Loop through every volume container block sequentially
-        for (volume in volumeSections) {
-            // 2. Select the list rows matching the DOM structure in image_a70f22.jpg
-            val chapters = volume.select("li.wp-manga-chapter")
+
+        if (novelId.isNotBlank()) {
+            // 2. Query the native async core endpoint directly using a simulated AJAX form payload
+            val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
             
-            for (ch in chapters) {
-                val linkElement = ch.selectFirst("a") ?: continue
-                val cUrl = linkElement.attr("href") ?: continue
-                
-                // Get the clean name text or capture the inner span element
-                val spanName = linkElement.selectFirst("span.nhv-chapter-name")?.text()?.trim()
-                val cName = if (!spanName.isNullOrBlank()) spanName else linkElement.text().trim()
-                
-                // Extract the post release timestamp text
-                val added = ch.selectFirst("span.chapter-release-date")?.text()?.trim()
-                
-                data.add(ChapterData(cName, cUrl, added, null))
+            val ajaxResponse = app.post(
+                ajaxUrl,
+                headers = mapOf(
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to url
+                ),
+                data = mapOf(
+                    "action" to "nhv_manga_get_chapters", // Custom child theme hook handler
+                    "manga" to novelId
+                )
+            ).document
+
+            // 3. Drill down into the injected accordion panels once fully rendered by the server response
+            val volumeSections = ajaxResponse.select("section.nhv-volume-card")
+            
+            for (volume in volumeSections) {
+                val chapters = volume.select("li.wp-manga-chapter")
+                for (ch in chapters) {
+                    val linkElement = ch.selectFirst("a") ?: continue
+                    val cUrl = linkElement.attr("href") ?: continue
+                    
+                    val spanName = linkElement.selectFirst("span.nhv-chapter-name")?.text()?.trim()
+                    val cName = if (!spanName.isNullOrBlank()) spanName else linkElement.text().trim()
+                    val added = ch.selectFirst("span.chapter-release-date")?.text()?.trim()
+                    
+                    data.add(ChapterData(cName, cUrl, added, null))
+                }
             }
         }
-        
-        // 3. Since volume blocks are listed chronological but inner tables might vary, 
-        // let's check reading trajectory orientation.
-        // If the first parsed item is a higher chapter number than the last, reverse it!
+
+        // Final fallback block: If the custom script pipeline blocks us, query the standard routing endpoint
+        if (data.isEmpty()) {
+            val cleanUrl = url.removeSuffix("/")
+            val fallbackDoc = app.post(
+                "$cleanUrl/ajax/chapters/", 
+                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+            ).document
+            
+            fallbackDoc.select("li.wp-manga-chapter > a, div.nhv-latest10-bridge__grid a").forEach { c ->
+                data.add(ChapterData(c.text().trim(), c.attr("href"), null, null))
+            }
+        }
+
+        // Sort chronologically ensuring index safety tracking
+        data.distinctBy { it.url }
         if (data.size > 1) {
             val firstNum = data.first().name.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
             val lastNum = data.last().name.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
@@ -134,7 +163,7 @@ class CeneleProvider : MainAPI() {
             this.author = authors.ifBlank { "Unknown" }
             this.tags = document.select("div.genres-content a").map { it.text().trim() }
             this.posterUrl = document.select("div.summary_image img").attr("src")
-            this.synopsis = document.select("div.summary__content, div.description-summary, div.post-content_item h5:contains(القصة) + p").text().trim()
+            this.synopsis = document.select("div.summary__content, div.description-summary").text().trim()
         }
     }
 
