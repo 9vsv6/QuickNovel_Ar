@@ -58,17 +58,19 @@ class CeneleProvider : MainAPI() {
         val url = "$mainUrl/cont/page/$page/"
         val document = app.get(url).document
         
-        // Target the element rows from your catalog snapshot (image_973906.jpg)
-        val returnValue = document.select("article.nhv-nrRow, div.page-item-detail").mapNotNull { h ->
-            val linkElement = h.selectFirst("a.nhv-nrCover, div.item-thumb a") ?: return@mapNotNull null
-            val cUrl = linkElement.attr("href") ?: return@mapNotNull null
+        // Target catalog wrappers
+        val returnValue = document.select("article.nhv-nrRow, div.page-item-detail, div.manga-box").mapNotNull { h ->
+            // Try to find the exact novel title links
+            val textLink = h.selectFirst("h3.post-title a, div.post-title a, a.nhv-nrCover") ?: return@mapNotNull null
+            val cUrl = textLink.attr("href") ?: return@mapNotNull null
             
-            // Extract the title from the img alt attribute or anchor title attributes
-            val imgElement = linkElement.selectFirst("img.nhv-prog-img, img")
-            val name = imgElement?.attr("alt")?.trim() ?: linkElement.attr("title") ?: return@mapNotNull null
+            // FIX: Prioritize getting the actual clean text or title attribute of the link instead of image alt
+            val name = textLink.attr("title").ifBlank { textLink.text() }.trim()
+            if (name.isBlank() || name.startsWith("image-") || name.startsWith("peak")) return@mapNotNull null
+            
+            val imgElement = h.selectFirst("img")
             
             newSearchResponse(name = name, url = cUrl) {
-                // Captures standard src maps directly from the homepage card wrapper layout
                 posterUrl = imgElement?.attr("src") ?: imgElement?.attr("data-src")
             }
         }
@@ -78,11 +80,14 @@ class CeneleProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query&post_type=wp-manga").document
         return document.select("article.nhv-nrRow, div.page-item-detail, div.c-tabs-item__content").mapNotNull { h ->
-            val linkElement = h.selectFirst("a.nhv-nrCover, div.item-thumb a, div.post-title a") ?: return@mapNotNull null
-            val cUrl = linkElement.attr("href") ?: return@mapNotNull null
+            val textLink = h.selectFirst("div.post-title h3 a, div.post-title a, a.nhv-nrCover, div.item-thumb a") ?: return@mapNotNull null
+            val cUrl = textLink.attr("href") ?: return@mapNotNull null
+            
+            // FIX: Stop parsing the image alt attributes to avoid filename leaks
+            val name = textLink.attr("title").ifBlank { textLink.text() }.trim()
+            if (name.isBlank() || name.startsWith("image-") || name.startsWith("peak")) return@mapNotNull null
             
             val imgElement = h.selectFirst("img")
-            val name = imgElement?.attr("alt")?.trim() ?: linkElement.text() ?: return@mapNotNull null
             
             newSearchResponse(name = name, url = cUrl) {
                 posterUrl = imgElement?.attr("src") ?: imgElement?.attr("data-src")
@@ -162,7 +167,6 @@ class CeneleProvider : MainAPI() {
             this.author = authors.ifBlank { "Unknown" }
             this.tags = document.select("div.genres-content a").map { it.text().trim() }
             this.posterUrl = document.select("div.summary_image img").attr("src")
-            // Targeted to map precisely onto the description element from image_973584.jpg
             this.synopsis = document.select("div.excerpt-content, div.summary__content, div.description-summary").text().trim()
         }
     }
