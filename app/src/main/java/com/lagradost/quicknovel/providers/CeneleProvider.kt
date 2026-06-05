@@ -58,14 +58,18 @@ class CeneleProvider : MainAPI() {
         val url = "$mainUrl/cont/page/$page/"
         val document = app.get(url).document
         
-        val returnValue = document.select("div#loop-content div.page-item-detail").mapNotNull { h ->
-            val imageHeader = h.selectFirst("div.item-thumb a") ?: return@mapNotNull null
-            val cUrl = imageHeader.attr("href") ?: return@mapNotNull null
-            val name = imageHeader.attr("title") ?: return@mapNotNull null
+        // Target the element rows from your catalog snapshot (image_973906.jpg)
+        val returnValue = document.select("article.nhv-nrRow, div.page-item-detail").mapNotNull { h ->
+            val linkElement = h.selectFirst("a.nhv-nrCover, div.item-thumb a") ?: return@mapNotNull null
+            val cUrl = linkElement.attr("href") ?: return@mapNotNull null
+            
+            // Extract the title from the img alt attribute or anchor title attributes
+            val imgElement = linkElement.selectFirst("img.nhv-prog-img, img")
+            val name = imgElement?.attr("alt")?.trim() ?: linkElement.attr("title") ?: return@mapNotNull null
             
             newSearchResponse(name = name, url = cUrl) {
-                posterUrl = imageHeader.selectFirst("img")?.attr("data-src") 
-                    ?: imageHeader.selectFirst("img")?.attr("src")
+                // Captures standard src maps directly from the homepage card wrapper layout
+                posterUrl = imgElement?.attr("src") ?: imgElement?.attr("data-src")
             }
         }
         return HeadMainPageResponse(url, returnValue)
@@ -73,14 +77,15 @@ class CeneleProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query&post_type=wp-manga").document
-        return document.select("div#loop-content div.page-item-detail, div.c-tabs-item__content").mapNotNull { h ->
-            val imageHeader = h.selectFirst("div.item-thumb a, div.post-title a") ?: return@mapNotNull null
-            val cUrl = imageHeader.attr("href") ?: return@mapNotNull null
-            val name = imageHeader.attr("title")?.ifBlank { imageHeader.text() } ?: return@mapNotNull null
+        return document.select("article.nhv-nrRow, div.page-item-detail, div.c-tabs-item__content").mapNotNull { h ->
+            val linkElement = h.selectFirst("a.nhv-nrCover, div.item-thumb a, div.post-title a") ?: return@mapNotNull null
+            val cUrl = linkElement.attr("href") ?: return@mapNotNull null
+            
+            val imgElement = h.selectFirst("img")
+            val name = imgElement?.attr("alt")?.trim() ?: linkElement.text() ?: return@mapNotNull null
             
             newSearchResponse(name = name, url = cUrl) {
-                posterUrl = h.selectFirst("img")?.attr("data-src") 
-                    ?: h.selectFirst("img")?.attr("src")
+                posterUrl = imgElement?.attr("src") ?: imgElement?.attr("data-src")
             }
         }
     }
@@ -157,7 +162,8 @@ class CeneleProvider : MainAPI() {
             this.author = authors.ifBlank { "Unknown" }
             this.tags = document.select("div.genres-content a").map { it.text().trim() }
             this.posterUrl = document.select("div.summary_image img").attr("src")
-            this.synopsis = document.select("div.summary__content, div.description-summary").text().trim()
+            // Targeted to map precisely onto the description element from image_973584.jpg
+            this.synopsis = document.select("div.excerpt-content, div.summary__content, div.description-summary").text().trim()
         }
     }
 
@@ -165,7 +171,6 @@ class CeneleProvider : MainAPI() {
         val document = app.get(url).document
         val contentSelector = document.selectFirst("div.read-container, div.text-left, div.reading-content") ?: return null
         
-        // 1. Instantly drop explicitly obfuscated structural layouts and ad modules
         contentSelector.select("div.orw-ad-slot, div.orw-reader-gap").remove()
         contentSelector.select("[style*=opacity:0], [style*=transparent], [aria-hidden=true]").remove()
         
@@ -176,11 +181,9 @@ class CeneleProvider : MainAPI() {
             var text = p.text().trim()
             if (text.isBlank()) continue
 
-            // 2. Clear out full paragraphs that are pure copy-theft watermarks
             val isEntirelyFake = text.contains("فضاء الروايات") && text.contains("مسروق")
             if (isEntirelyFake) continue
 
-            // 3. De-weave target regex patterns matching injected trailing anti-bot components
             val fakePatterns = listOf(
                 Regex("""هذا نص تمويهي من موقع.*?(?=(\s[أإا]ذا|http|$))"""),
                 Regex("""[أإا]ذا ظهر داخل تطبيق آخر فالإ?مصر مسروق.*?(?=(http|$))"""),
@@ -194,10 +197,8 @@ class CeneleProvider : MainAPI() {
                 text = text.replace(pattern, "")
             }
 
-            // Scrub residual detached comma strings or spacing errors left by string slices
             text = text.replace(Regex("""\s*,\s*"""), " ").trim()
 
-            // 4. Reconstruct structural paragraph wrapping only around surviving actual chapter data
             if (text.isNotBlank() && text.length > 5) {
                 cleanHtml.append("<p>").append(text).append("</p>")
             }
