@@ -58,7 +58,6 @@ class CeneleProvider : MainAPI() {
         val url = "$mainUrl/cont/page/$page/"
         val document = app.get(url).document
         
-        // Maps the catalog card containers visible in the layout tree
         val returnValue = document.select("div#loop-content div.page-item-detail").mapNotNull { h ->
             val imageHeader = h.selectFirst("div.item-thumb a") ?: return@mapNotNull null
             val cUrl = imageHeader.attr("href") ?: return@mapNotNull null
@@ -89,13 +88,11 @@ class CeneleProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
         
-        // Combined extraction parsing for localized and clean global titles
         val mainTitle = document.select("div.manga-title h2").text().trim()
         val altTitle = document.select("div.manga-alt-title").text().replace("رواية", "").trim()
         val finalName = if (altTitle.isNotBlank()) "$mainTitle ($altTitle)" else mainTitle
         val authors = document.select("div.manga-author a, div.author-content a").text().trim()
 
-        // 1. Parse the core database novel identifier from the DOM structure container
         val chaptersContainer = document.selectFirst("div#nhv-manga-chapters")
         val novelId = chaptersContainer?.attr("data-novel") 
             ?: Regex("""\"manga_id\":\"(\d+)\"""").find(document.html())?.groupValues?.get(1) 
@@ -103,7 +100,6 @@ class CeneleProvider : MainAPI() {
 
         val data: ArrayList<ChapterData> = ArrayList()
 
-        // 2. Query the native async endpoint directly using a simulated AJAX form payload
         if (novelId.isNotBlank()) {
             val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
             
@@ -119,7 +115,6 @@ class CeneleProvider : MainAPI() {
                 )
             ).document
 
-            // 3. Loop sequentially through the nested volume layers injected inside the response layout
             val volumeSections = ajaxResponse.select("section.nhv-volume-card")
             
             for (volume in volumeSections) {
@@ -137,7 +132,6 @@ class CeneleProvider : MainAPI() {
             }
         }
 
-        // Structural backward fallback safety check loop
         if (data.isEmpty()) {
             val cleanUrl = url.removeSuffix("/")
             val fallbackDoc = app.post(
@@ -150,7 +144,6 @@ class CeneleProvider : MainAPI() {
             }
         }
 
-        // Filter duplicates and verify chronological alignment formatting configuration arrays
         data.distinctBy { it.url }
         if (data.size > 1) {
             val firstNum = data.first().name.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
@@ -170,37 +163,46 @@ class CeneleProvider : MainAPI() {
 
     override suspend fun loadHtml(url: String): String? {
         val document = app.get(url).document
-        
-        // 1. Target the correct readable core text container block layout node wrapper
         val contentSelector = document.selectFirst("div.read-container, div.text-left, div.reading-content") ?: return null
         
-        // 2. Clear out standard advertisement blocks and tracking components explicitly
-        contentSelector.select("div.orw-ad-slot").remove()     
-        contentSelector.select("div.orw-reader-gap").remove()   
-        contentSelector.select("[style*=opacity:0]").remove()    
-        contentSelector.select("[style*=transparent]").remove()  
-        contentSelector.select("[aria-hidden=true]").remove()    
+        // 1. Instantly drop explicitly obfuscated structural layouts and ad modules
+        contentSelector.select("div.orw-ad-slot, div.orw-reader-gap").remove()
+        contentSelector.select("[style*=opacity:0], [style*=transparent], [aria-hidden=true]").remove()
         
-        // 3. Deep-cleaning textual filtration loop targeting cloaked anti-theft content markers
+        val cleanHtml = StringBuilder()
         val paragraphs = contentSelector.select("p")
+        
         for (p in paragraphs) {
-            val text = p.text().trim()
-            
-            // Evaluates targeted strings against known rotating anti-bot warning keywords and unique layout hashes
-            val isFakeText = text.contains("فضاء الروايات") || 
-                             text.contains("مسروق") || 
-                             text.contains("تطبيق") || 
-                             text.contains("تمويهي") || 
-                             text.contains("المصدر الوحيد") ||
-                             text.contains("بدون إذن") ||
-                             text.contains("cenele.com") ||
-                             text.contains("#") // Wipes text paragraphs carrying embedded tracking hash keys
-            
-            if (isFakeText) {
-                p.remove() // Instantly deletes the toxic tag node out of the document collection
+            var text = p.text().trim()
+            if (text.isBlank()) continue
+
+            // 2. Clear out full paragraphs that are pure copy-theft watermarks
+            val isEntirelyFake = text.contains("فضاء الروايات") && text.contains("مسروق")
+            if (isEntirelyFake) continue
+
+            // 3. De-weave target regex patterns matching injected trailing anti-bot components
+            val fakePatterns = listOf(
+                Regex("""هذا نص تمويهي من موقع.*?(?=(\s[أإا]ذا|http|$))"""),
+                Regex("""[أإا]ذا ظهر داخل تطبيق آخر فالإ?مصر مسروق.*?(?=(http|$))"""),
+                Regex("""اقرأ من المصدر.*?(?=(http|$))"""),
+                Regex("""شاي روايات تطبيق سارق ويأخذ محتوى بدون إذن.*?(?=(http|$))"""),
+                Regex("""https://cenele.com/#[A-Za-z0-9_*/]+"""),
+                Regex("""9865dfg #[A-Za-z0-9_*\/]+""")
+            )
+
+            for (pattern in fakePatterns) {
+                text = text.replace(pattern, "")
+            }
+
+            // Scrub residual detached comma strings or spacing errors left by string slices
+            text = text.replace(Regex("""\s*,\s*"""), " ").trim()
+
+            // 4. Reconstruct structural paragraph wrapping only around surviving actual chapter data
+            if (text.isNotBlank() && text.length > 5) {
+                cleanHtml.append("<p>").append(text).append("</p>")
             }
         }
 
-        return contentSelector.html()
+        return cleanHtml.toString()
     }
 }
