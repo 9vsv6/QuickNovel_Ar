@@ -1,6 +1,8 @@
 package com.lagradost.quicknovel.providers
 
 import android.net.Uri
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.quicknovel.ChapterData
 import com.lagradost.quicknovel.ErrorLoadingException
 import com.lagradost.quicknovel.HeadMainPageResponse
@@ -19,6 +21,7 @@ import org.jsoup.nodes.Document
 class RewayatProvider(): MainAPI() {
     override val name = "Rewayat"
     override val mainUrl = "https://rewayat.club"
+    private val secondUrl = "https://api.rewayat.club"
     override val iconId = R.drawable.icon_default
 
     override val hasMainPage = true
@@ -61,114 +64,189 @@ class RewayatProvider(): MainAPI() {
         orderBy: String?,
         tag: String?
     ): HeadMainPageResponse {
-        // Matches the explicit custom library URL path requested
-        val url = "$mainUrl/library?type=${mainCategory ?: "0"}&ordering=${orderBy ?: "-num_chapters"}${if (!tag.isNullOrEmpty()) "&genre=$tag" else ""}&page=$page"
-        val document = app.get(url).document
+        val typeParam = mainCategory ?: "0"
+        val orderParam = orderBy ?: "-num_chapters"
+        val genreParam = if (!tag.isNullOrEmpty()) "&genre=$tag" else ""
+        
+        // Bypasses the HTML frame and queries the backend REST endpoints directly
+        val apiUrl = "$secondUrl/api/novels/?type=$typeParam&ordering=$orderParam&page=$page$genreParam"
+        val response = app.get(apiUrl).parsed<RewayatSearchResponse>()
 
-        // Target grid blocks visible in image_8cb631.jpg
-        val returnValue = document.select("div.row.row--dense > div").mapNotNull { div ->
-            val anchorElement = div.selectFirst("a") ?: return@mapNotNull null
-            val relativeUrl = anchorElement.attr("href") ?: return@mapNotNull null
-            val title = anchorElement.selectFirst("div.v-list-item__title")?.text()?.trim() ?: return@mapNotNull null
-
-            // Direct inline CSS background-image style regex parsing from image_8cb631.jpg
-            val styleAttr = anchorElement.selectFirst("div.v-image__image")?.attr("style") ?: ""
-            val imgUrlMatch = Regex("""url\("([^"]+)"\)""").find(styleAttr)?.groupValues?.get(1)
-                ?: Regex("""url\(&quot;([^&]+)&quot;\)""").find(styleAttr)?.groupValues?.get(1)
-
-            newSearchResponse(
-                name = title,
-                url = fixUrl(relativeUrl)
-            ) {
-                this.posterUrl = imgUrlMatch?.trim()
+        val returnValue = response.results.map { element ->
+            val title = element.arabic?.ifBlank { element.english }.orEmpty().ifBlank { "Novel" }
+            val novelUrl = "$mainUrl/novel/${element.slug}"
+            val coverUrl = if (element.posterUrl?.startsWith("http") == true) {
+                element.posterUrl
+            } else {
+                "$secondUrl${element.posterUrl.orEmpty()}"
+            }
+            
+            newSearchResponse(name = title, url = novelUrl) {
+                this.posterUrl = coverUrl
             }
         }
-        return HeadMainPageResponse(url, returnValue)
-    }
-
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-        val infoDiv = document.select("div.container")
-
-        val title = document.selectFirst("h1 > span, div.text-h4")?.text()?.trim() 
-            ?: throw ErrorLoadingException("Failed to load novel description metadata")
-
-        // 1. Direct page DOM element map utilizing the structural paths verified in image_8cb254.jpg
-        val data: ArrayList<ChapterData> = ArrayList()
-        val chapterElements = document.select("div.v-window-item--active a.v-list-item--link, div[role=list] a")
         
-        for (ch in chapterElements) {
-            val cUrl = ch.attr("href") ?: continue
-            
-            // Extracts title string block safely out of the list item rows
-            val cName = ch.selectFirst("div.v-list-item__title, div.v-list-item__content")?.text()?.trim() 
-                ?: ch.text().trim()
-                
-            data.add(newChapterData(cName, fixUrl(cUrl)))
-        }
-
-        // Standard chronological sort normalization check
-        data.reverse()
-
-        // 2. Capture cover art from description header styles
-        val styleAttr = document.selectFirst("div.v-image__image")?.attr("style") ?: ""
-        val coverUrl = Regex("""url\("([^"]+)"\)""").find(styleAttr)?.groupValues?.get(1)
-            ?: Regex("""url\(&quot;([^&]+)&quot;\)""").find(styleAttr)?.groupValues?.get(1)
-
-        return newStreamResponse(title, fixUrl(url), data) {
-            this.posterUrl = coverUrl?.trim()
-            this.synopsis = document.selectFirst("div.text-body-2.text-pre-line, div.font-cairo.mb-6")?.text()?.trim() ?: ""
-        }
-    }
-
-    private fun getChapterParagraphs(doc: Document): List<String>? {
-        val script = doc.select("script")
-            .firstOrNull { it.data().contains("window.__NUXT__") }
-            ?.data()
-        val contentRaw = Regex("""\.content\s*=\s*"(.*?)";""")
-            .find(script ?: "")
-            ?.groupValues?.get(1)
-        
-        val html = contentRaw
-            ?.replace("\\n", "")
-            ?.replace("\\u003C", "<")
-            ?.replace("\\u003E", ">")
-            ?.replace("\\u002F", "/")
-            ?: return null
-
-        return Jsoup.parse(html)
-            .select("p")
-            .map { it.text().trim() }
-            .filter { it.isNotEmpty() }
-    }
-
-    override suspend fun loadHtml(url: String): String? {
-        val dc = app.get(url).document
-        val title = dc.selectFirst("h1, div.v-card__subtitle.font-cairo")?.outerHtml() ?: ""
-        val contentElement = getChapterParagraphs(dc) ?: return null
-        return title + "</br>" + contentElement.joinToString("</br>")
+        val pageUrl = "$mainUrl/library?type=$typeParam&ordering=$orderParam$genreParam&page=$page"
+        return HeadMainPageResponse(pageUrl, returnValue)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/api/novels/search/all/?search=${Uri.encode(query)}"
-        val responseDoc = app.get(url).document
+        val apiUrl = "$secondUrl/api/novels/?search=${Uri.encode(query)}"
+        val response = app.get(apiUrl).parsed<RewayatSearchResponse>()
         
-        // If they return an API layout list response, let's fall back gracefully onto library search routes
-        val librarySearchUrl = "$mainUrl/library?search=${Uri.encode(query)}"
-        val document = app.get(librarySearchUrl).document
-
-        return document.select("div.row.row--dense > div").mapNotNull { div ->
-            val anchorElement = div.selectFirst("a") ?: return@mapNotNull null
-            val relativeUrl = anchorElement.attr("href") ?: return@mapNotNull null
-            val title = anchorElement.selectFirst("div.v-list-item__title")?.text()?.trim() ?: return@mapNotNull null
-
-            val styleAttr = anchorElement.selectFirst("div.v-image__image")?.attr("style") ?: ""
-            val imgUrlMatch = Regex("""url\("([^"]+)"\)""").find(styleAttr)?.groupValues?.get(1)
-                ?: Regex("""url\(&quot;([^&]+)&quot;\)""").find(styleAttr)?.groupValues?.get(1)
-
-            newSearchResponse(title, fixUrl(relativeUrl)) {
-                posterUrl = imgUrlMatch?.trim()
+        return response.results.map { element ->
+            val title = element.arabic?.ifBlank { element.english }.orEmpty().ifBlank { "Novel" }
+            val novelUrl = "$mainUrl/novel/${element.slug}"
+            val coverUrl = if (element.posterUrl?.startsWith("http") == true) {
+                element.posterUrl
+            } else {
+                "$secondUrl${element.posterUrl.orEmpty()}"
+            }
+            
+            newSearchResponse(name = title, url = novelUrl) {
+                this.posterUrl = coverUrl
             }
         }
     }
+
+    override suspend fun load(url: String): LoadResponse {
+        val slug = url.removeSuffix("/").substringAfterLast("/")
+        val detailUrl = "$secondUrl/api/novels/$slug/"
+        
+        // Fetches novel descriptions safely from the native core model layout parameters
+        val detail = try {
+            app.get(detailUrl).parsed<RewayatNovelDetail>()
+        } catch (e: Exception) {
+            val fallbackUrl = "$secondUrl/api/novels/?search=$slug"
+            val searchRes = app.get(fallbackUrl).parsed<RewayatSearchResponse>()
+            val match = searchRes.results.firstOrNull { it.slug == slug }
+            if (match != null) {
+                RewayatNovelDetail(match.id, match.arabic, match.english, match.slug, match.posterUrl, "", match.numChapters ?: 0)
+            } else {
+                throw ErrorLoadingException("Failed to pull novel parameters from API")
+            }
+        }
+
+        val title = detail.arabic?.ifBlank { detail.english }.orEmpty().ifBlank { "Novel" }
+        val coverUrl = if (detail.posterUrl?.startsWith("http") == true) {
+            detail.posterUrl
+        } else {
+            "$secondUrl${detail.posterUrl.orEmpty()}"
+        }
+
+        // Lazy pagination indexing routine mapping full chapter data bundles sequentially
+        val chaptersUrl = "$secondUrl/api/chapters/$slug/?ordering=number&page="
+        val firstPageResponse = app.get(chaptersUrl + "1").parsed<RewayatMainResponse>()
+        val totalChapters = firstPageResponse.count
+
+        val chapterList = ArrayList<ChapterData>()
+        if (totalChapters > 0) {
+            for (i in 0 until totalChapters.toInt()) {
+                val chapterUrl = "$chaptersUrl-------$i-------$totalChapters"
+                chapterList.add(newChapterData("الفصل ${i + 1}", chapterUrl))
+            }
+        }
+
+        return newStreamResponse(title, fixUrl(url), chapterList) {
+            this.posterUrl = coverUrl
+            this.synopsis = detail.description.orEmpty().trim()
+        }
+    }
+
+    private fun getChapterParagraphs(doc: Document): List<String> {
+        val htmlParagraphs = doc.select("div.chapter-content p, div.text-body-1 p, p")
+            .map { it.text().trim() }
+            .filter { it.isNotEmpty() }
+            
+        if (htmlParagraphs.size > 3) return htmlParagraphs
+
+        // Fallback: Parse window.__NUXT__ structure tokens if text content is string-hydrated
+        val scriptData = doc.select("script").map { it.data() }.firstOrNull { it.contains("window.__NUXT__") } ?: ""
+        val contentPattern = Regex("""["']content["']\s*:\s*"([^"]+)"""")
+        val contentRaw = contentPattern.find(scriptData)?.groupValues?.get(1)
+            ?: Regex("""\.content\s*=\s*"(.*?)";""").find(scriptData)?.groupValues?.get(1)
+
+        if (contentRaw != null) {
+            val html = contentRaw
+                .replace("\\n", "")
+                .replace("\\u003C", "<")
+                .replace("\\u003E", ">")
+                .replace("\\u002F", "/")
+            return Jsoup.parse(html).select("p").map { it.text().trim() }.filter { it.isNotEmpty() }
+        }
+        
+        return htmlParagraphs
+    }
+
+    override suspend fun loadHtml(url: String): String? {
+        val chapterData = url.split("-------")
+        if (chapterData.size == 1) {
+            val dc = app.get(url).document
+            val title = dc.selectFirst("div.v-card__subtitle.font-cairo, h1")?.outerHtml() ?: ""
+            val contentElement = getChapterParagraphs(dc)
+            return title + contentElement.joinToString("</br>")
+        }
+
+        val baseUrl = chapterData[0]
+        val chapterBigIndex = chapterData[1].toInt()
+        val itemsPerPage = 24
+
+        val normalPage = (chapterBigIndex / itemsPerPage) + 1
+        val chapterIndex = chapterBigIndex % itemsPerPage
+
+        val response = app.get("$baseUrl$normalPage").parsed<RewayatMainResponse>()
+        val chapter = response.results.getOrNull(chapterIndex) ?: return null
+        
+        val slug = url.substringAfterLast("chapters/").substringBefore("/?ordering")
+        val fullUrl = "$mainUrl/novel/$slug/${chapter.number}"
+        
+        val dc = app.get(fullUrl).document
+        val title = dc.selectFirst("h1 a, div.text-h5, h1")?.outerHtml() ?: ""
+        val contentElement = getChapterParagraphs(dc)
+        return title + "</br>" + contentElement.joinToString("</br>")
+    }
+
+    // JSON Model Framework mapping properties safely via Jackson deserializers
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class RewayatNovelDetail(
+        val id: Long,
+        val arabic: String?,
+        val english: String?,
+        val slug: String,
+        @JsonProperty("poster_url")
+        val posterUrl: String?,
+        val description: String?,
+        @JsonProperty("num_chapters")
+        val numChapters: Long
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class RewayatSearchResponse(
+        val count: Long,
+        val results: List<Result>,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class Result(
+        val arabic: String?,
+        val english: String?,
+        val slug: String,
+        @JsonProperty("poster_url")
+        val posterUrl: String?,
+        @JsonProperty("num_chapters")
+        val numChapters: Long?,
+        val id: Long,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class RewayatMainResponse(
+        val count: Long,
+        val results: List<Result2>,
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class Result2(
+        val number: Long,
+        val title: String?,
+    )
 }
